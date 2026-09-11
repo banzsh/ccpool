@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ccpool as C  # noqa: E402
+import ccpool_watch as W  # noqa: E402
 
 UPSTREAM = os.environ.get("CCPOOL_UPSTREAM", "https://api.anthropic.com")
 PREFIX = "anthropic-ratelimit-unified-"
@@ -163,44 +164,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             if status == 429:
                 spent = C.exhausted_claims(limits)
+                detail = (", ".join(f"{c}={r.get('status','?')}/"
+                                    f"{r.get('utilization','?')}"
+                                    for c, r in sorted(limits.items()))
+                          or "NO unified rate-limit headers")
+                retry = headers.get("retry-after")
+                try:
+                    wait = int(retry or 0)
+                except ValueError:
+                    wait = 0
+                reason = "reported exhausted quota" if spent else "no exhausted quota"
                 if not spent:
-                    # "No exhausted claim" has two very different causes that
-                    # used to look identical in the log: quota really is fine
-                    # (upstream congestion), or no unified headers arrived at
-                    # all and we simply cannot tell. Record which.
-                    detail = (", ".join(f"{c}={r.get('status','?')}/"
-                                        f"{r.get('utilization','?')}"
-                                        for c, r in sorted(limits.items()))
-                              or "NO unified rate-limit headers on this 429")
                     try:
                         snippet = resp.read(200).decode("utf-8", "replace")
                     except OSError:
                         snippet = "<unreadable>"
-                    retry = headers.get("retry-after")
-                    self.note(f"{name}: 429 not quota -- {detail}"
-                              + (f"; retry-after={retry}" if retry else "")
-                              + f"; body={snippet!r}")
-                    # A rate-limit 429 telling us to come back in over an hour
-                    # is exhaustion in everything but headers (seen live:
-                    # seven_day at 0.97 "allowed_warning", retry-after of two
-                    # days). Bench for exactly that long -- otherwise the
-                    # client hammers a dead account until reset. five_hour,
-                    # not a made-up claim: it is the one claim in every CLAIMS
-                    # tuple, so the picker actually skips the account (same
-                    # reasoning as `ccpool hold`).
-                    try:
-                        wait = int(retry or 0)
-                    except ValueError:
-                        wait = 0
                     if wait > 3600:
-                        spent = {"five_hour": int(time.time()) + wait}
+                        # This authentic cooldown belongs to the requested
+                        # model's weekly claim, not every model. Unknown model
+                        # names keep the old conservative global fallback.
+                        known_model = model and any(k in model for k in W.CLAIMS)
+                        claim = W.claims_for(model)[-1] if known_model else "five_hour"
+                        spent = {claim: int(time.time()) + wait}
+                        reason = "long Retry-After for requested model"
+                    else:
+                        reason += f"; body={snippet!r}"
+                chosen = ",".join(sorted(spent)) if spent else "none"
+                self.note(f"{name}: 429 model={model!r}; quota={detail}; "
+                          f"retry-after={retry or '?'}; cooldown={chosen}; "
+                          f"reason={reason}")
                 conn.close()
                 if spent:
                     with LOCK:
                         for claim, reset in spent.items():
                             C.bench(name, claim, reset)
                     self.note(f"{name} out on {','.join(sorted(spent))} -- "
-                              f"rotating, session continues")
+                              f"rotating to another account and retrying request")
                     continue
                 # A 429 carrying no spent claim is upstream load, not quota.
                 # Rotating would not help and benching would be a lie.

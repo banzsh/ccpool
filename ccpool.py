@@ -3,7 +3,7 @@
 
     ccpool add work            # paste a token on stdin; never on argv
     ccpool ls
-    ccpool clear work          # undo a bench
+    ccpool clear work          # undo a bench; use `all` for the whole pool
     ccpool run -- -p "do the thing" --model opus
 
 `run` picks an eligible account, runs Claude Code under it, and on a rate-limit
@@ -473,13 +473,27 @@ def resets(limits: dict[str, dict]) -> dict[str, int]:
     return out
 
 
+# The claims every model draws on, whatever it is -- haiku draws nothing else.
+# A cooldown on one of these takes the whole account out; a cooldown on any
+# other claim only takes out the one model that spends it.
+SHARED = W.CLAIMS["haiku"]
+
+
+def blocked_for(out: dict[str, int], claim: str, at: float) -> bool:
+    """Is a request drawing on `claim` refused at epoch `at`? Only by a cooldown
+    on `claim` itself or on a claim every model shares -- Fable's weekly limit
+    says nothing about whether Opus can run."""
+    return any(out.get(c, 0) > at for c in (claim, *SHARED))
+
+
 def headroom(live: list[dict], claim: str, at: float) -> float:
     """Percent of one account's quota free across the pool, as it will stand at
     epoch `at` -- claims whose reset has passed by then count as empty, and an
-    account still benched on anything at that moment contributes nothing."""
+    account whose cooldowns refuse this claim at that moment contributes
+    nothing."""
     total = 0.0
     for acct in live:
-        if any(r > at for r in acct["spent"].values()):
+        if blocked_for(acct["spent"], claim, at):
             continue
         if claim not in acct["util"]:
             continue
@@ -548,12 +562,19 @@ def cmd_status(_args) -> int:
             p for p in (
                 f"[benched: {','.join(LABEL.get(c, c) for c in sorted(spent))}]"
                 if spent else "",
-                f"[held: {fmt_reset(min(held.values()))[1:-1]}]" if held else "")
+                # Name the claim: a hold on one model's weekly limit leaves the
+                # account serving every other model, and the bare time left
+                # read as if the whole account were gone.
+                "[held: " + ",".join(
+                    f"{LABEL.get(c, c)}{fmt_reset(held[c])}"
+                    for c in sorted(held, key=lambda c: ORDER.get(c, 99))) + "]"
+                if held else "")
             if p)
-        # Usable now sorts first; the rest follow in the order they come back,
-        # so the top row is always the one to reach for next.
+        # Accounts that can still serve something sort first; only a cooldown on
+        # a shared claim takes the whole account out of the running.
         out = {**spent, **held}
-        key = (1, min(out.values())) if out else (0, 0)
+        gone = [t for c, t in out.items() if c in SHARED]
+        key = (1, min(gone)) if gone else (0, 0)
         rows.append((name, parts, tail, key))
         record_resets(name, limits)
         live.append({"util": utils(limits), "reset": resets(limits),
@@ -578,6 +599,16 @@ def cmd_status(_args) -> int:
 
 def cmd_clear(args) -> int:
     st = load(STATE)
+    if args.name == "all":
+        for acct in st.get("accounts", {}).values():
+            if args.claim:
+                acct.get("cooldown", {}).pop(args.claim, None)
+            else:
+                acct["cooldown"] = {}
+        write_atomic(STATE, st)
+        print(f"ccpool: cleared {args.claim or 'all cooldowns'} for all accounts",
+              file=sys.stderr)
+        return 0
     acct = st.get("accounts", {}).get(args.name)
     if not acct:
         print(f"ccpool: no cooldowns for '{args.name}'", file=sys.stderr)

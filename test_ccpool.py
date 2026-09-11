@@ -202,6 +202,14 @@ def main():
         cd = json.loads((home8 / "state.json").read_text())["accounts"]["h1"]
         check("clear releases it", not cd.get("cooldown"), cd)
 
+        ccpool("hold", "h1", home=home8, api=api)
+        ccpool("hold", "h2", home=home8, api=api)
+        r = ccpool("clear", "all", home=home8, api=api)
+        cds = json.loads((home8 / "state.json").read_text())["accounts"]
+        check("clear all releases every account",
+              r.returncode == 0 and all(not a.get("cooldown") for a in cds.values()),
+              (r.stderr, cds))
+
         print("\n`status` records what it already paid to learn")
         home7 = d / "home7"
         add(home7, "s-full", "tok-quota-s-full", api)
@@ -228,10 +236,26 @@ def main():
 
         ccpool("hold", "s-ok", home=home7, api=api)
         r = ccpool("status", home=home7, api=api)
-        check("a hand-held account says so, and until when",
-              re.search(r"s-ok .*\[held: \d+h\d+m\]", r.stdout), r.stdout)
+        check("a hand-held account says so, on which claim and until when",
+              re.search(r"s-ok .*\[held: 5h\(\d+h\d+m\)\]", r.stdout), r.stdout)
         check("and it stops counting toward pool headroom",
               re.search(r"All .*5h:0%", r.stdout), r.stdout)
+
+        print("\nA hold on one model's weekly claim leaves the rest of the account")
+        st = json.loads((home7 / "state.json").read_text())
+        st["accounts"]["s-ok"]["cooldown"] = {
+            "seven_day_overage_included": int(time.time() + 4 * 86400)}
+        (home7 / "state.json").write_text(json.dumps(st))
+        r = ccpool("status", home=home7, api=api)
+        check("the hold names Fable, not the whole account",
+              re.search(r"s-ok .*\[held: fable\(\d+d\d+h\)\]", r.stdout), r.stdout)
+        check("its 5h quota still counts toward pool headroom",
+              re.search(r"All .*5h:(?!0%)\d+%", r.stdout), r.stdout)
+        check("but its Fable quota does not",
+              re.search(r"All .*fable:0%", r.stdout), r.stdout)
+        r = ccpool("run", "--", "-p", "hi", "--model", "opus", home=home7, api=api)
+        check("and an Opus request still runs on it",
+              "ran under tok-ok-s-ok" in r.stdout, r.stdout[-300:])
     finally:
         srv.shutdown()
         shutil.rmtree(d, ignore_errors=True)

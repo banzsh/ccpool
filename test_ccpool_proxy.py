@@ -234,19 +234,26 @@ def main():
               {n: C.cooldowns(n) for n in C.accounts()})
         OVERLOAD.clear()
 
-        print("\nA 429 pointing hours away is exhaustion, whatever the headers say")
+        print("\nA long Fable Retry-After does not hold Opus")
         SPENT.clear(); SEEN.clear()
         LONGWAIT.add("tok-three")
         C.write_atomic(C.STATE, {"current": "three"})
-        status, body = post(port)
+        status, body = post(port, {"model": "claude-fable-5"})
         check("client still sees a 200", status == 200, f"{status} {body[:120]}")
         check("the stalled account was tried first, then another",
               len(SEEN) >= 2 and "tok-three" in SEEN[0]
               and "tok-three" not in SEEN[-1], SEEN)
-        check("and it is benched on a claim the picker actually reads",
-              C.cooldowns("three").get("five_hour", 0) > time.time() + 3600,
+        check("only Fable's weekly claim is benched",
+              C.cooldowns("three").get("seven_day_overage_included", 0) > time.time() + 3600
+              and "five_hour" not in C.cooldowns("three"),
               C.cooldowns("three"))
         LONGWAIT.clear()
+        SEEN.clear()
+        C.write_atomic(C.STATE, {"current": "three"})
+        status, body = post(port, {"model": "claude-opus-5"})
+        check("an Opus request can still use that account", status == 200
+              and len(SEEN) == 1 and "tok-three" in SEEN[0],
+              f"{status} {SEEN} {body[:120]}")
 
         print("\nWhole pool exhausted is reported honestly")
         SPENT.update({"tok-one", "tok-two", "tok-three"})
