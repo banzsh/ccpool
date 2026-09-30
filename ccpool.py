@@ -235,7 +235,7 @@ def fmt_reset(val) -> str:
     return f"({h}h{m}m)" if h else f"({m}m)"
 
 
-def probe_limits(token: str) -> dict[str, dict] | None:
+def probe_limits(token: str, quiet: bool = False) -> dict[str, dict] | None:
     """Ask Anthropic directly what this account's quota actually is.
 
     Not /api/oauth/usage: that requires `user:profile` scope and a setup-token
@@ -274,14 +274,16 @@ def probe_limits(token: str) -> dict[str, dict] | None:
         with contextlib.suppress(Exception):
             e.read()
     except (urllib.error.URLError, OSError) as e:
-        print(f"ccpool: probe failed ({e.__class__.__name__}); cannot confirm",
-              file=sys.stderr)
+        if not quiet:
+            print(f"ccpool: probe failed ({e.__class__.__name__}); cannot confirm",
+                  file=sys.stderr)
         return None
 
     hdrs = {k.lower(): v for k, v in hdrs.items() if k.lower().startswith(PREFIX)}
     if not hdrs:
-        print("ccpool: probe returned no rate-limit headers; cannot confirm",
-              file=sys.stderr)
+        if not quiet:
+            print("ccpool: probe returned no rate-limit headers; cannot confirm",
+                  file=sys.stderr)
         return None
 
     out: dict[str, dict] = {}
@@ -527,14 +529,13 @@ def cmd_status(_args) -> int:
     if not accts:
         print("no accounts")
         return 0
-    bad = 0
     rows = []                    # (name, [cell per claim], tail, sortkey)
     live = []                    # per-account {util, reset, spent} for the total
     for name, rec in accts.items():
-        limits = probe_limits(rec.get("token", ""))
+        # A dead token stays in the vault on purpose -- it parks an account that
+        # is disabled for now -- so status leaves it out rather than nagging.
+        limits = probe_limits(rec.get("token", ""), quiet=True)
         if limits is None:
-            rows.append((name, [], "UNREACHABLE -- token may be dead", (2, 0)))
-            bad += 1
             continue
         parts = []
         for claim in sorted(limits, key=lambda c: ORDER.get(c, 99)):
@@ -580,6 +581,9 @@ def cmd_status(_args) -> int:
         live.append({"util": utils(limits), "reset": resets(limits),
                      "spent": out})
 
+    if not rows:
+        print("no reachable accounts")
+        return 1
     rows.sort(key=lambda r: r[3])
 
     if live:
@@ -594,7 +598,7 @@ def cmd_status(_args) -> int:
         cells = " | ".join(p.ljust(wide[i]) for i, p in enumerate(parts))
         print(f"  {name:<{namew}}  {cells}{'  ' + tail if tail else ''}"
               .rstrip())
-    return 1 if bad else 0
+    return 0
 
 
 def cmd_clear(args) -> int:
