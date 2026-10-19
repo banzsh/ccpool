@@ -44,6 +44,21 @@ ccpool proxy &
 ANTHROPIC_BASE_URL=http://127.0.0.1:8790 claude
 ```
 
+`ccpool launch` does the live-session setup in one step, the way
+`ollama launch claude` does for Ollama. It starts the proxy if nothing answers on
+the port, then runs `claude` with `ANTHROPIC_BASE_URL` pointed at it:
+
+```sh
+ccpool launch                          # claude
+ccpool launch -- --model opus          # args after -- go to claude
+ccpool launch cmux -- claude-teams     # any other tool
+```
+
+The proxy runs detached and keeps running after the session ends, so later
+launches and other windows share it. Its output goes to `~/.ccpool/proxy.log`.
+If the port is held by something that is not a ccpool proxy, `launch` refuses
+rather than sending your session to it.
+
 Other commands: `status` (probe real quota, costs one call per account), `hold`
 (pull an account out of rotation), `clear` (undo a bench), `rm`.
 
