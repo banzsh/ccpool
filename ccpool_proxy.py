@@ -338,18 +338,19 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
-def probe(port: int, host: str = "127.0.0.1") -> dict | None:
+def probe(port: int, host: str = "127.0.0.1", timeout: float = 5) -> dict | None:
     """The health answer of the ccpool proxy on this port: None when nothing
     listens, {} from a proxy too old to answer HEALTH itself.
 
     Every ccpool proxy names itself in the first Server header, the old ones
     too: they relay the path upstream, but send_response puts ours before
-    Anthropic's. Raises OSError when anything else answers. http.client rather
-    than urllib, so an HTTP(S)_PROXY in the environment is never asked.
+    Anthropic's. Raises OSError when anything else answers, socket.timeout when
+    nothing answers in time. http.client rather than urllib, so an
+    HTTP(S)_PROXY in the environment is never asked. The default timeout is
+    long enough for an old proxy's round trip to Anthropic.
     """
     refused = OSError(f"port {port} is held by something that is not {SERVICE}")
-    # Long enough for an old proxy's round trip to Anthropic.
-    conn = http.client.HTTPConnection(host, port, timeout=5)
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         try:
             conn.request("GET", HEALTH)

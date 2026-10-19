@@ -705,7 +705,7 @@ def start_proxy(port: int) -> bool:
     about to own it.
     """
     import ccpool_proxy as P
-    HOME.mkdir(parents=True, exist_ok=True)
+    HOME.mkdir(parents=True, mode=0o700, exist_ok=True)
     with open(PROXY_LOG, "ab") as log:
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "proxy",
@@ -732,20 +732,32 @@ def start_proxy(port: int) -> bool:
 
 def cmd_statusline(_args) -> int:
     """A Claude Code status-line segment: `ccpool <account>` while this
-    session's ANTHROPIC_BASE_URL is a local proxy that accepts connections,
-    `ccpool down` when it does not, nothing when the session goes direct.
+    session's traffic reaches a ccpool proxy, `ccpool down` when the local port
+    it points at does not answer, nothing when the session goes anywhere else.
 
-    A status-line command inherits the session's environment, so the base URL
-    read here is the session's own. A bare TCP connect rather than
-    ccpool_proxy.probe: this runs on every refresh, and a proxy that predates
-    the health path would relay each probe to Anthropic.
+    A status-line command inherits the session's environment, so the URLs read
+    here are the session's own. Behind headroom, ANTHROPIC_BASE_URL is
+    headroom's port and ANTHROPIC_TARGET_API_URL is the hop that has to be
+    ccpool, so that one wins when it is set. The port is probed rather than
+    merely connected to: anything else listening there, headroom included,
+    must not read as the pool.
     """
-    url = urllib.parse.urlsplit(os.environ.get("ANTHROPIC_BASE_URL", ""))
-    if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost"):
+    import ccpool_proxy as P
+    try:
+        url = urllib.parse.urlsplit(os.environ.get("ANTHROPIC_TARGET_API_URL")
+                                    or os.environ.get("ANTHROPIC_BASE_URL", ""))
+        host, port = url.hostname, url.port or 80
+    except ValueError:
+        return 0  # a URL that does not parse is not our proxy
+    if url.scheme != "http" or host not in ("127.0.0.1", "localhost"):
         return 0
     try:
-        socket.create_connection((url.hostname, url.port or 80), timeout=0.2).close()
+        running = P.probe(port, host, timeout=1)
+    except socket.timeout:
+        running = None  # it accepts but never answers: no request gets through
     except OSError:
+        return 0
+    if running is None:
         print("\033[31mccpool down\033[0m", end="")
         return 0
     current = load(STATE).get("current")

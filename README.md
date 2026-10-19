@@ -60,10 +60,11 @@ If the port is held by something that is not a ccpool proxy, `launch` refuses
 rather than sending your session to it.
 
 `ccpool statusline` tells you which sessions go through the pool. It prints
-`ccpool <account>` while the session's `ANTHROPIC_BASE_URL` is a local proxy
-that accepts connections, `ccpool down` when it does not, and nothing when the
-session goes straight to Anthropic. Use it as the status line, or call it from
-your own status-line script:
+`ccpool <account>` while the session's `ANTHROPIC_BASE_URL` answers as a ccpool
+proxy, `ccpool down` when nothing answers on that local port, and nothing when
+the session goes anywhere else. Behind headroom it reads
+`ANTHROPIC_TARGET_API_URL` instead, the hop that has to be ccpool. Use it as the
+status line, or call it from your own status-line script:
 
 ```json
 "statusLine": { "type": "command", "command": "ccpool statusline" }

@@ -10,6 +10,8 @@ What has to hold:
   * proxy up         -> reused, never started twice
   * two at once      -> one proxy serves both
   * port held by something else -> refused, and the tool never runs
+  * status line      -> green only for a ccpool proxy, never for whatever else
+                        listens; quiet on a URL it cannot parse
 """
 import http.server
 import json
@@ -77,11 +79,15 @@ def ran(out):
     return [json.loads(line) for line in out.read_text().splitlines()]
 
 
-def statusline(env, base):
+def statusline(env, base, target=None):
+    """The segment, colours stripped, and stderr."""
+    env = {**env, "ANTHROPIC_BASE_URL": base}
+    env.pop("ANTHROPIC_TARGET_API_URL", None)
+    if target:
+        env["ANTHROPIC_TARGET_API_URL"] = target
     r = subprocess.run([sys.executable, str(HERE / "ccpool.py"), "statusline"],
-                       env={**env, "ANTHROPIC_BASE_URL": base},
-                       capture_output=True, text=True, timeout=10)
-    return re.sub(r"\x1b\[[0-9;]*m", "", r.stdout)
+                       env=env, capture_output=True, text=True, timeout=10)
+    return re.sub(r"\x1b\[[0-9;]*m", "", r.stdout), r.stderr
 
 
 def proxies(port):
@@ -114,6 +120,10 @@ def main():
     old = http.server.HTTPServer(("127.0.0.1", 0), OldProxy)
     threading.Thread(target=old.serve_forever, daemon=True).start()
     empty = Path(tempfile.mkdtemp())
+    # Accepts connections (the kernel does, from the backlog) but never answers.
+    mute = socket.socket()
+    mute.bind(("127.0.0.1", 0))
+    mute.listen(8)
 
     try:
         print("\nProxy down: launch starts it, then runs claude through it")
@@ -138,11 +148,31 @@ def main():
         print("\nStatus line: says whether the session goes through the pool")
         (home / "state.json").write_text(json.dumps({"current": "one"}))
         seg = statusline(env, f"http://127.0.0.1:{port}")
-        check("proxy up: names the active account", seg == "ccpool one", repr(seg))
+        check("proxy up: names the active account", seg == ("ccpool one", ""), seg)
+        seg = statusline(env, f"http://127.0.0.1:{old.server_port}")
+        check("an older ccpool proxy counts as the pool", seg == ("ccpool one", ""), seg)
         seg = statusline(env, f"http://127.0.0.1:{free_port()}")
-        check("nothing on the port: says it is down", seg == "ccpool down", repr(seg))
+        check("nothing on the port: says it is down", seg == ("ccpool down", ""), seg)
+        seg = statusline(env, f"http://127.0.0.1:{mute.getsockname()[1]}")
+        check("a port that never answers: says it is down",
+              seg == ("ccpool down", ""), seg)
         seg = statusline(env, "https://api.anthropic.com")
-        check("direct session: prints nothing", seg == "", repr(seg))
+        check("direct session: prints nothing", seg == ("", ""), seg)
+        seg = statusline(env, f"http://127.0.0.1:{other.server_port}")
+        check("something else on the port: prints nothing", seg == ("", ""), seg)
+        for bad in ("http://127.0.0.1:abc", "http://localhost:99999"):
+            seg = statusline(env, bad)
+            check(f"unparsable {bad}: prints nothing, no traceback",
+                  seg == ("", ""), seg)
+
+        print("\nStatus line behind headroom: the target URL is the hop that counts")
+        seg = statusline(env, f"http://127.0.0.1:{other.server_port}",
+                         target="https://api.anthropic.com")
+        check("headroom straight to Anthropic: prints nothing", seg == ("", ""), seg)
+        seg = statusline(env, f"http://127.0.0.1:{other.server_port}",
+                         target=f"http://127.0.0.1:{port}")
+        check("headroom in front of ccpool: names the active account",
+              seg == ("ccpool one", ""), seg)
 
         print("\nTwo launches at once: one proxy serves both")
         before = len(ran(out))
@@ -180,7 +210,19 @@ def main():
         rc, so, se = finish(launch(env, "--port", str(port), str(home / "nope")))
         check("exits 127 naming the tool", rc == 127 and "nope" in se
               and "Traceback" not in se, f"{rc} {se}")
+
+        print("\nA missing CCPOOL_HOME is created private, whatever the umask")
+        fresh = empty / "fresh"
+        subprocess.run(
+            [sys.executable, "-c",
+             "import os, sys; os.umask(0o022); sys.path.insert(0, sys.argv[1]);"
+             " import ccpool; ccpool.start_proxy(int(sys.argv[2]))",
+             str(HERE), str(free_port())],
+            env={**env, "CCPOOL_HOME": str(fresh)}, capture_output=True, timeout=30)
+        mode = fresh.stat().st_mode & 0o777 if fresh.exists() else None
+        check("it is 0700", mode == 0o700, oct(mode) if mode is not None else mode)
     finally:
+        mute.close()
         other.shutdown(); old.shutdown()
         for p in (port, raced, old.server_port):
             for pid in proxies(p):
