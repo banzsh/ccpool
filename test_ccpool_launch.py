@@ -14,6 +14,7 @@ What has to hold:
 import http.server
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -76,6 +77,13 @@ def ran(out):
     return [json.loads(line) for line in out.read_text().splitlines()]
 
 
+def statusline(env, base):
+    r = subprocess.run([sys.executable, str(HERE / "ccpool.py"), "statusline"],
+                       env={**env, "ANTHROPIC_BASE_URL": base},
+                       capture_output=True, text=True, timeout=10)
+    return re.sub(r"\x1b\[[0-9;]*m", "", r.stdout)
+
+
 def proxies(port):
     r = subprocess.run(["pgrep", "-f", f"ccpool.py proxy --port {port}$"],
                        capture_output=True, text=True)
@@ -126,6 +134,15 @@ def main():
         check("the tool gets the args after --", ran(out)[-1]["argv"] == ["again"],
               ran(out))
         check("same proxy, not a second one", P.probe(port) == first, P.probe(port))
+
+        print("\nStatus line: says whether the session goes through the pool")
+        (home / "state.json").write_text(json.dumps({"current": "one"}))
+        seg = statusline(env, f"http://127.0.0.1:{port}")
+        check("proxy up: names the active account", seg == "ccpool one", repr(seg))
+        seg = statusline(env, f"http://127.0.0.1:{free_port()}")
+        check("nothing on the port: says it is down", seg == "ccpool down", repr(seg))
+        seg = statusline(env, "https://api.anthropic.com")
+        check("direct session: prints nothing", seg == "", repr(seg))
 
         print("\nTwo launches at once: one proxy serves both")
         before = len(ran(out))

@@ -39,11 +39,13 @@ import argparse
 import contextlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -728,6 +730,29 @@ def start_proxy(port: int) -> bool:
     return False
 
 
+def cmd_statusline(_args) -> int:
+    """A Claude Code status-line segment: `ccpool <account>` while this
+    session's ANTHROPIC_BASE_URL is a local proxy that accepts connections,
+    `ccpool down` when it does not, nothing when the session goes direct.
+
+    A status-line command inherits the session's environment, so the base URL
+    read here is the session's own. A bare TCP connect rather than
+    ccpool_proxy.probe: this runs on every refresh, and a proxy that predates
+    the health path would relay each probe to Anthropic.
+    """
+    url = urllib.parse.urlsplit(os.environ.get("ANTHROPIC_BASE_URL", ""))
+    if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost"):
+        return 0
+    try:
+        socket.create_connection((url.hostname, url.port or 80), timeout=0.2).close()
+    except OSError:
+        print("\033[31mccpool down\033[0m", end="")
+        return 0
+    current = load(STATE).get("current")
+    print("\033[32mccpool\033[0m" + (f" {current}" if current else ""), end="")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="ccpool", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -747,6 +772,10 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=PORT)
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="[TOOL] [-- ARGS]")
     p.set_defaults(fn=cmd_launch)
+
+    p = sub.add_parser("statusline", help="status-line segment: is this session "
+                                          "going through the proxy")
+    p.set_defaults(fn=cmd_statusline)
 
     p = sub.add_parser("status", help="probe every account's real quota (costs a call each)")
     p.set_defaults(fn=cmd_status)
